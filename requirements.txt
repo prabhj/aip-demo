@@ -1,0 +1,10 @@
+# Lakebase's database.* API (generate_database_credential, get_database_instance)
+# is fairly new -- pin a recent databricks-sdk. Verified working against 0.94.0.
+databricks-sdk>=0.90.0
+unitycatalog-ai[databricks]>=0.4.0
+# unitycatalog.ai.openai (UCFunctionToolkit for OpenAI) ships as a separate
+# package from unitycatalog-ai itself -- both are required.
+unitycatalog-openai>=0.4.0
+openai>=1.30.0
+psycopg2-binary>=2.9.9
+streamlit>=1.37.0
