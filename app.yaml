@@ -12,11 +12,11 @@ command: ["streamlit", "run", "app.py"]
 
 env:
   - name: "UC_CATALOG"
-    value: "main"
+    value: "pj_demo_att_catalog"
   - name: "UC_SCHEMA"
-    value: "genie_demo"
+    value: "aip_demo"
   - name: "DATABRICKS_SQL_WAREHOUSE_ID"
-    value: ""            # required -- ID of a small SQL warehouse the app can use
+    value: "34691042d7237871"            # required -- ID of a small SQL warehouse the app can use
   - name: "MODEL_ENDPOINT"
     value: "databricks-meta-llama-3-3-70b-instruct"
   - name: "LAKEBASE_INSTANCE_NAME"
@@ -24,6 +24,6 @@ env:
   - name: "LAKEBASE_DATABASE"
     value: "databricks_postgres"
   - name: "ALLOWED_UC_TABLES"
-    value: "main.genie_demo.customers,main.genie_demo.orders"
+    value: "pj_demo_att_catalog.aip_demo.customers,pj_demo_att_catalog.aip_demo.orders"
   - name: "ALLOWED_LAKEBASE_TABLES"
     value: "support_tickets"
