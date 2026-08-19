@@ -71,14 +71,47 @@ class LakebaseToolError(Exception):
     pass
 
 
-def _resolve_endpoint() -> tuple[str, str]:
-    """Returns (endpoint_full_name, host) for the project's default branch's
-    read-write endpoint, e.g. endpoint_full_name =
-    'projects/<id>/branches/<id>/endpoints/<id>'.
+def _endpoint_type_of(endpoint) -> "EndpointType | None":
+    """The Autoscaling Postgres API is still evolving (its own SDK docstring
+    for generate_database_credential's `endpoint` param says "not yet
+    supported"), so don't trust endpoint_type living in exactly one place --
+    check spec first, then status, since which one the API actually
+    populates isn't guaranteed to be stable."""
+    if endpoint.spec and endpoint.spec.endpoint_type:
+        return endpoint.spec.endpoint_type
+    if endpoint.status and endpoint.status.endpoint_type:
+        return endpoint.status.endpoint_type
+    return None
 
-    Cached for the life of the process -- call _endpoint_cache.clear()-style
-    reset (or just restart the app) if the project's branch/endpoint
-    topology changes underneath a running deployment.
+
+def _pick_endpoint(endpoints: list) -> tuple:
+    """Returns (endpoint, note) for the best candidate in this branch's
+    endpoint list, or (None, None) if there's nothing usable. Prefers an
+    explicitly-typed read-write endpoint; falls back to a single unlabeled
+    endpoint (common on a fresh demo project) with a warning, since most
+    single-endpoint Autoscaling branches are read-write by default."""
+    rw = [e for e in endpoints if _endpoint_type_of(e) == EndpointType.ENDPOINT_TYPE_READ_WRITE]
+    if rw:
+        return rw[0], None
+    untyped = [e for e in endpoints if _endpoint_type_of(e) is None]
+    if len(untyped) == 1 and not endpoints[1:]:
+        return untyped[0], (
+            f"endpoint '{untyped[0].name}' has no endpoint_type set by the API; "
+            f"using it since it's the branch's only endpoint."
+        )
+    return None, None
+
+
+def _resolve_endpoint() -> tuple[str, str]:
+    """Returns (endpoint_full_name, host) for a read-write endpoint in the
+    project, e.g. endpoint_full_name = 'projects/<id>/branches/<id>/endpoints/<id>'.
+
+    Tries the default branch first, then falls through every other branch
+    in the project -- a branch marked "default" isn't guaranteed to be the
+    one that actually has a provisioned read-write endpoint.
+
+    Cached for the life of the process -- restart the app if the project's
+    branch/endpoint topology changes underneath a running deployment.
     """
     if _endpoint_cache["name"] and _endpoint_cache["host"]:
         return _endpoint_cache["name"], _endpoint_cache["host"]
@@ -97,25 +130,42 @@ def _resolve_endpoint() -> tuple[str, str]:
     if not branches:
         raise LakebaseToolError(f"Project '{project_name}' has no branches.")
     default_branch = next((b for b in branches if b.status and b.status.default), None)
-    if default_branch is None:
-        default_branch = branches[0]
-        logger.warning(
-            f"No branch in {project_name} is marked default; falling back to "
-            f"the first branch returned ({default_branch.name})."
-        )
+    ordered_branches = ([default_branch] if default_branch else []) + [
+        b for b in branches if b is not default_branch
+    ]
 
-    endpoints = list(_w.postgres.list_endpoints(parent=default_branch.name))
-    rw_endpoint = next(
-        (
-            e for e in endpoints
-            if e.spec and e.spec.endpoint_type == EndpointType.ENDPOINT_TYPE_READ_WRITE
-        ),
-        None,
-    )
+    diagnostics = []
+    rw_endpoint = None
+    chosen_branch = None
+    for branch in ordered_branches:
+        endpoints = list(_w.postgres.list_endpoints(parent=branch.name))
+        diagnostics.append(
+            f"  {branch.name}{' (default)' if branch is default_branch else ''}: "
+            + (
+                ", ".join(f"{e.name.rsplit('/', 1)[-1]}={_endpoint_type_of(e)}" for e in endpoints)
+                if endpoints else "no endpoints"
+            )
+        )
+        candidate, note = _pick_endpoint(endpoints)
+        if candidate is not None:
+            if note:
+                logger.warning(note)
+            rw_endpoint = candidate
+            chosen_branch = branch
+            break
+
     if rw_endpoint is None:
         raise LakebaseToolError(
-            f"Branch '{default_branch.name}' has no read-write endpoint. "
-            f"Found endpoint types: {[e.spec.endpoint_type for e in endpoints if e.spec]}"
+            f"No read-write endpoint found on any branch of project '{project_name}'. "
+            f"Endpoints found per branch:\n" + "\n".join(diagnostics) +
+            "\n\nThis usually means compute hasn't been created for this project/branch yet -- "
+            "open the project in the Lakebase Postgres UI and check that a read-write endpoint "
+            "exists and is running, or create one, then retry."
+        )
+    if chosen_branch is not default_branch:
+        logger.warning(
+            f"Using read-write endpoint from branch '{chosen_branch.name}', which is not the "
+            f"project's default branch ({default_branch.name if default_branch else 'none marked default'})."
         )
 
     # list_endpoints results carry status already, but re-fetch to be sure
