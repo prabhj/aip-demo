@@ -192,10 +192,12 @@ def _get_credential(endpoint_name: str) -> str:
 
     cred = _w.postgres.generate_database_credential(endpoint=endpoint_name)
     _cred_cache["token"] = cred.token
-    # DatabaseCredential.expire_time is a real timestamp when present; fall
+    # DatabaseCredential.expire_time is a google.protobuf.Timestamp message,
+    # NOT a Python datetime -- it has no .timestamp() method (that raised
+    # AttributeError in production). Use its own ToSeconds() instead; fall
     # back to the documented ~1hr lifetime if the SDK doesn't populate it.
     if getattr(cred, "expire_time", None):
-        _cred_cache["expires_at"] = cred.expire_time.timestamp()
+        _cred_cache["expires_at"] = cred.expire_time.ToSeconds()
     else:
         _cred_cache["expires_at"] = now + 3600
     return cred.token
