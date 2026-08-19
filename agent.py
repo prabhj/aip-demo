@@ -10,6 +10,7 @@ Kept separate from app.py so the agent logic is testable without Streamlit.
 import json
 import logging
 
+import mlflow
 import openai
 from databricks.sdk import WorkspaceClient
 from unitycatalog.ai.core.databricks import DatabricksFunctionClient
@@ -26,6 +27,21 @@ logger = logging.getLogger(__name__)
 
 _w = WorkspaceClient()
 _uc_client = DatabricksFunctionClient()
+
+# --- MLflow tracing -----------------------------------------------------
+# Autologs every LLM call the openai client below makes -- prompt, response,
+# tool calls, latency -- to an MLflow experiment. This is intentionally
+# separate from (and doesn't require) registering the agent as an MLflow
+# model / Model Serving endpoint: tracing works against a plain running app,
+# it's just observability. Non-fatal if it can't set up (e.g. the service
+# principal doesn't have permission to create the experiment path yet) --
+# the app should still serve requests without tracing rather than crash.
+if config.MLFLOW_TRACING_ENABLED:
+    try:
+        mlflow.set_experiment(config.MLFLOW_EXPERIMENT_PATH)
+        mlflow.openai.autolog()
+    except Exception as e:
+        logger.warning(f"MLflow tracing setup failed, continuing without it: {e}")
 
 # --- LLM client -------------------------------------------------------
 # Deliberately NOT minting a fresh PAT per run (w.tokens.create(...)) like
@@ -188,6 +204,16 @@ Rules:
 """
 
 
+@mlflow.trace(name="uc_native_function", span_type="TOOL")
+def _execute_uc_native(name: str, args: dict) -> str:
+    try:
+        result = _uc_client.execute_function(function_name=_uc_native_name_to_full[name], parameters=args)
+        return result.error if result.error else (result.value or "[]")
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mlflow.trace(name="tool_execution", span_type="TOOL")
 def _dispatch_local(name: str, args: dict, pending_store: PendingActionStore, current_user: str) -> str:
     try:
         if name == "query_uc_table":
@@ -255,11 +281,7 @@ def run_agent(messages: list, pending_store: PendingActionStore, current_user: s
                 args = {}
 
             if name in _uc_native_name_to_full:
-                try:
-                    result = _uc_client.execute_function(function_name=_uc_native_name_to_full[name], parameters=args)
-                    tool_result = result.error if result.error else (result.value or "[]")
-                except Exception as e:
-                    tool_result = f"Error: {e}"
+                tool_result = _execute_uc_native(name, args)
             else:
                 tool_result = _dispatch_local(name, args, pending_store, current_user)
 

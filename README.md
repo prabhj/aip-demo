@@ -2,7 +2,8 @@
 
 A Genie-like chat agent that reads and writes both Unity Catalog tables and
 a Lakebase Postgres database, with a propose-then-confirm safety step on
-every write and full audit logging. Built as a Databricks App (Streamlit).
+every write, full audit logging, and MLflow tracing on every LLM/tool call.
+Built as a Databricks App (Streamlit).
 
 Ships with synthetic sample data (customers/orders in UC, support_tickets
 in Lakebase) so it runs standalone for a demo -- see "Reuse for a client's
@@ -35,6 +36,30 @@ rather than Lakebase's actual OAuth credential-vending path. This version:
   dynamic query/write tools in-app instead of trying to force them into a
   UC SQL function's single-RETURN-expression body. See the docstring at
   the top of `tools/uc_connector.py` for why.
+- Adds MLflow tracing (`mlflow.openai.autolog()` in `agent.py`), so every
+  LLM call and every tool execution -- including a hidden failure like a
+  permission error inside a tool -- shows up as a queryable trace, not just
+  something that scrolled past in the app logs.
+
+## Viewing traces
+
+Once the app is deployed and you've sent it a message, open the workspace's
+**Experiments** page and find the experiment at the path set by
+`MLFLOW_EXPERIMENT_PATH` (default `/Shared/genie_uc_lakebase_agent`) --
+each conversation turn shows up as a trace with the full LLM call (prompt,
+response, which tools it decided to call) and a nested span for each tool
+execution (`tool_execution` for the local UC/Lakebase tools, `uc_native_function`
+for `list_tables`/`describe_table`), including their inputs/outputs and
+timing. If the experiment doesn't show up, check that the app's service
+principal has permission to create experiments at that path -- tracing
+setup fails silently (logs a warning, doesn't crash the app) so the app
+staying up doesn't mean tracing is actually working. Set
+`MLFLOW_TRACING_ENABLED=false` to turn it off entirely.
+
+This is separate from -- and doesn't require -- registering the agent
+itself as an MLflow model served via Model Serving. That's a bigger step
+(see "Known simplifications" below) worth doing only if the agent needs to
+be callable from somewhere other than this app's own UI.
 
 ## Prerequisites
 
@@ -63,11 +88,23 @@ Copy the defaults in `config.py` or set these env vars:
 
 ## 2. Create sample data
 
+**If you have the Databricks CLI:**
 ```bash
 pip install -r requirements.txt
 python setup/deploy_sample_data.py         # UC: customers, orders, audit log, helper functions
 python setup/deploy_lakebase_sample.py     # Lakebase: support_tickets (only if LAKEBASE_INSTANCE_NAME is set)
 ```
+
+**UI-only (no CLI):**
+- UC side: open **SQL Editor** in the workspace and run `sql/01_schema_and_tables.sql`
+  then `sql/02_uc_helper_functions.sql`, with `{{CATALOG}}`/`{{SCHEMA}}` replaced by
+  your real values (find-and-replace before pasting).
+- Lakebase side: there's no SQL-Editor equivalent for Postgres. Create a new
+  Databricks **notebook**, paste in `setup/lakebase_notebook_setup.py`, fill in
+  the three `LAKEBASE_*` values at the top, and run it. It's self-contained
+  (no dependency on this repo's file layout) so it works regardless of where
+  the notebook lives, and it authenticates the same way the app itself will
+  (`generate_database_credential`), so if the notebook can connect, the app will too.
 
 ## 3. Governance (do this before the demo, not after)
 
@@ -131,6 +168,10 @@ app's env vars), not the code:
   bulk/complex updates.
 - No multi-turn memory beyond the current Streamlit session (resets on
   "Reset conversation" or app restart).
-- Not yet registered as an MLflow model / served via Model Serving -- it
-  runs as a Databricks App directly. Worth doing if this needs to be
-  called from somewhere other than this UI (Slack bot, another app, etc).
+- MLflow tracing is on (see "Viewing traces"), but the agent is still not
+  registered as an MLflow model / served via Model Serving -- it runs as a
+  Databricks App directly. Worth doing only if this needs to be callable
+  from somewhere other than this app's own UI (Slack bot, another app, etc).
+- Also worth granting the app's identity `CREATE EXPERIMENT` (or pre-creating
+  the `/Shared/genie_uc_lakebase_agent` experiment and granting access to
+  it) as part of the governance step -- otherwise tracing silently no-ops.

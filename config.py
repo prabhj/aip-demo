@@ -67,6 +67,15 @@ LAKEBASE_ENABLED = bool(LAKEBASE_INSTANCE_NAME)
 # --- Model serving endpoint ---
 MODEL_ENDPOINT = os.environ.get("MODEL_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
 
+# --- MLflow tracing ---
+# Every LLM call and tool call gets logged to this experiment (autolog in
+# agent.py) so a run can be inspected after the fact -- what the model saw,
+# which tools it called, in what order, how long each step took. "/Shared/"
+# rather than a /Users/ path since the app runs as a service principal, not
+# a real user. Set MLFLOW_TRACING_ENABLED=false to turn it off entirely.
+MLFLOW_EXPERIMENT_PATH = os.environ.get("MLFLOW_EXPERIMENT_PATH", "/Shared/genie_uc_lakebase_agent")
+MLFLOW_TRACING_ENABLED = os.environ.get("MLFLOW_TRACING_ENABLED", "true").lower() != "false"
+
 # --- Safety limits ---
 MAX_ROW_LIMIT = int(os.environ.get("MAX_ROW_LIMIT", "200"))
 DEFAULT_ROW_LIMIT = int(os.environ.get("DEFAULT_ROW_LIMIT", "50"))
