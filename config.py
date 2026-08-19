@@ -16,14 +16,14 @@ import os
 # --- Unity Catalog target ---
 # The catalog/schema the sample data + audit log live in. Point this at the
 # client's own catalog/schema to reuse this app on their real tables.
-UC_CATALOG = os.environ.get("UC_CATALOG", "main")
-UC_SCHEMA = os.environ.get("UC_SCHEMA", "genie_demo")
+UC_CATALOG = os.environ.get("UC_CATALOG", "pj_demo_att_catalog")
+UC_SCHEMA = os.environ.get("UC_SCHEMA", "aip_demo")
 UC_FULL_SCHEMA = f"{UC_CATALOG}.{UC_SCHEMA}"
 
 # SQL warehouse the app uses to run governed reads/writes via the
 # Statement Execution API. Required -- create a small serverless SQL
 # warehouse for the app's service principal and put its ID here.
-SQL_WAREHOUSE_ID = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID", "")
+SQL_WAREHOUSE_ID = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID", "34691042d7237871")
 
 # Tables the agent is allowed to read/write in UC, as "schema.table" or
 # "catalog.schema.table". This is a defense-in-depth allowlist checked in
