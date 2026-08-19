@@ -42,14 +42,24 @@ ALLOWED_UC_TABLES = [
 AUDIT_LOG_TABLE = f"{UC_FULL_SCHEMA}.agent_audit_log"
 
 # --- Lakebase (Postgres) target ---
-# Name of the Lakebase database instance (not a hostname -- the SDK
-# resolves the connection endpoint for you). Leave blank to disable the
-# Lakebase tools entirely (the agent just won't offer them).
-LAKEBASE_INSTANCE_NAME = os.environ.get("LAKEBASE_INSTANCE_NAME", "")
+# Lakebase Postgres has two capacity modes with two different SDK/API
+# surfaces (see tools/lakebase_connector.py docstring for the full
+# explanation): legacy "Provisioned" (flat instance name -> WorkspaceClient.
+# database.*) and current-gen "Autoscaling" (Project -> Branch -> Endpoint
+# hierarchy -> WorkspaceClient.postgres.*). This app targets Autoscaling.
+#
+# LAKEBASE_PROJECT_ID is just the project's short ID -- the last segment of
+# its resource name "projects/{project_id}", and the same string shown as
+# the instance/project name in the Lakebase Postgres UI's "Autoscaling" tab.
+# The app resolves that project's default branch and read-write endpoint
+# itself at connect time, so you don't need to know branch/endpoint IDs.
+# Leave blank to disable the Lakebase tools entirely (the agent just won't
+# offer them).
+LAKEBASE_PROJECT_ID = os.environ.get("LAKEBASE_PROJECT_ID", "")
 LAKEBASE_DATABASE = os.environ.get("LAKEBASE_DATABASE", "databricks_postgres")
 LAKEBASE_PORT = int(os.environ.get("LAKEBASE_PORT", "5432"))
 # Postgres role to connect as. This role must already exist in the Lakebase
-# instance and be mapped to the Databricks identity the app runs as (see
+# project and be mapped to the Databricks identity the app runs as (see
 # Databricks docs "Authenticate to a database instance" -- Postgres roles
 # are provisioned separately from Databricks identities). If left blank,
 # the app falls back to the current Databricks user/service-principal name,
@@ -62,7 +72,7 @@ ALLOWED_LAKEBASE_TABLES = [
     if t.strip()
 ]
 
-LAKEBASE_ENABLED = bool(LAKEBASE_INSTANCE_NAME)
+LAKEBASE_ENABLED = bool(LAKEBASE_PROJECT_ID)
 
 # --- Model serving endpoint ---
 MODEL_ENDPOINT = os.environ.get("MODEL_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")

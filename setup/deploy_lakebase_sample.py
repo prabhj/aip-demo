@@ -1,7 +1,9 @@
 """
 One-time setup: creates the sample support_tickets table in the configured
-Lakebase instance. Requires LAKEBASE_INSTANCE_NAME (and optionally
-LAKEBASE_PG_USER) to be set -- see config.py.
+Lakebase project. Requires LAKEBASE_PROJECT_ID (and optionally
+LAKEBASE_PG_USER) to be set -- see config.py. Targets Lakebase Postgres
+"Autoscaling" capacity mode; see tools/lakebase_connector.py's docstring if
+your instance is legacy "Provisioned" instead.
 
 Run:
     python setup/deploy_lakebase_sample.py
@@ -29,7 +31,7 @@ def _has_real_sql(chunk: str) -> bool:
 
 if __name__ == "__main__":
     if not config.LAKEBASE_ENABLED:
-        raise SystemExit("Set LAKEBASE_INSTANCE_NAME before running this script.")
+        raise SystemExit("Set LAKEBASE_PROJECT_ID before running this script.")
 
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "..", "sql", "lakebase", "01_sample_lakebase_schema.sql")) as f:
@@ -37,7 +39,7 @@ if __name__ == "__main__":
 
     statements = [s.strip() for s in sql_text.split(";") if _has_real_sql(s)]
 
-    print(f"Connecting to Lakebase instance '{config.LAKEBASE_INSTANCE_NAME}' / db '{config.LAKEBASE_DATABASE}'...")
+    print(f"Connecting to Lakebase project '{config.LAKEBASE_PROJECT_ID}' / db '{config.LAKEBASE_DATABASE}'...")
     conn = get_connection()
     try:
         cur = conn.cursor()

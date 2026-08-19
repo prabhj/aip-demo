@@ -19,8 +19,9 @@ env:
     value: ""            # required -- ID of a small SQL warehouse the app can use
   - name: "MODEL_ENDPOINT"
     value: "databricks-meta-llama-3-3-70b-instruct"
-  - name: "LAKEBASE_INSTANCE_NAME"
-    value: ""            # leave blank to disable Lakebase tools for a pure-UC demo
+  - name: "LAKEBASE_PROJECT_ID"
+    value: ""            # leave blank to disable Lakebase tools for a pure-UC demo -- this is the
+                          # project ID shown in the Lakebase Postgres UI's "Autoscaling" tab, NOT a hostname
   - name: "LAKEBASE_DATABASE"
     value: "databricks_postgres"
   - name: "ALLOWED_UC_TABLES"

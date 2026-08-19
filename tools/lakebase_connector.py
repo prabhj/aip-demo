@@ -5,7 +5,7 @@ did.
 
 Two reasons for that change:
   1. Lakebase auth is meant to go through
-     WorkspaceClient.database.generate_database_credential(...), a
+     WorkspaceClient.postgres.generate_database_credential(...), a
      short-lived OAuth token vended for the *caller's* identity. That's a
      natural fit for a long-lived app process (mint once, cache, refresh
      hourly) but awkward inside a UC Python function's sandboxed,
@@ -17,16 +17,42 @@ Same safety shape as tools/uc_connector.py: an allowlist of tables, a
 structured (not free-text) filter, identifiers composed safely via
 psycopg2.sql rather than string formatting, and reads/writes split into
 propose -> confirm.
+
+--- Provisioned vs. Autoscaling: why this file looks the way it does ---
+Lakebase Postgres ships as two different capacity modes, and Databricks
+gave them two *different, incompatible* SDK surfaces rather than one API
+with a mode flag:
+
+  - "Provisioned" (legacy): a flat instance concept.
+    WorkspaceClient.database.get_database_instance(name=...) ->
+    .read_write_dns, and
+    WorkspaceClient.database.generate_database_credential(instance_names=[...]).
+  - "Autoscaling" (current default, what this app targets): a hierarchical
+    Project -> Branch -> Endpoint model under WorkspaceClient.postgres.*
+    (the PostgresAPI). There's no single "instance name -> hostname" call;
+    you resolve a project's default branch, that branch's read-write
+    endpoint, and only that endpoint has a connectable host.
+
+An instance created before the Autoscaling rollout and then upgraded shows
+up in the Postgres UI's "Autoscaling" tab with a "(upgraded)" suffix on its
+display name -- but that suffix is a UI label, not the actual project ID,
+and the underlying instance is a real Autoscaling project reachable only
+through WorkspaceClient.postgres.*, not WorkspaceClient.database.*.
+
+If you're on legacy Provisioned, the fix is to swap _resolve_endpoint() /
+_get_credential() below back to the WorkspaceClient.database.* calls
+described above -- everything downstream (the psycopg2 connection, the
+query/write functions) is unaffected either way.
 """
 
 import json
 import logging
 import time
-import uuid
 
 import psycopg2
 from psycopg2 import sql
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.postgres import EndpointType
 
 import config
 
@@ -35,24 +61,93 @@ logger = logging.getLogger(__name__)
 _w = WorkspaceClient()
 
 _cred_cache = {"token": None, "expires_at": 0}
+# Resolving project -> default branch -> read-write endpoint takes a few
+# API calls and that topology essentially never changes during a running
+# app process, so cache it separately from the (shorter-lived) credential.
+_endpoint_cache = {"name": None, "host": None}
 
 
 class LakebaseToolError(Exception):
     pass
 
 
-def _get_credential() -> str:
+def _resolve_endpoint() -> tuple[str, str]:
+    """Returns (endpoint_full_name, host) for the project's default branch's
+    read-write endpoint, e.g. endpoint_full_name =
+    'projects/<id>/branches/<id>/endpoints/<id>'.
+
+    Cached for the life of the process -- call _endpoint_cache.clear()-style
+    reset (or just restart the app) if the project's branch/endpoint
+    topology changes underneath a running deployment.
+    """
+    if _endpoint_cache["name"] and _endpoint_cache["host"]:
+        return _endpoint_cache["name"], _endpoint_cache["host"]
+
+    project_name = f"projects/{config.LAKEBASE_PROJECT_ID}"
+    try:
+        _w.postgres.get_project(name=project_name)
+    except Exception as e:
+        raise LakebaseToolError(
+            f"Could not find Lakebase project '{config.LAKEBASE_PROJECT_ID}'. "
+            f"Check LAKEBASE_PROJECT_ID matches the project ID shown in the "
+            f"Lakebase Postgres UI's 'Autoscaling' tab. Underlying error: {e}"
+        )
+
+    branches = list(_w.postgres.list_branches(parent=project_name))
+    if not branches:
+        raise LakebaseToolError(f"Project '{project_name}' has no branches.")
+    default_branch = next((b for b in branches if b.status and b.status.default), None)
+    if default_branch is None:
+        default_branch = branches[0]
+        logger.warning(
+            f"No branch in {project_name} is marked default; falling back to "
+            f"the first branch returned ({default_branch.name})."
+        )
+
+    endpoints = list(_w.postgres.list_endpoints(parent=default_branch.name))
+    rw_endpoint = next(
+        (
+            e for e in endpoints
+            if e.spec and e.spec.endpoint_type == EndpointType.ENDPOINT_TYPE_READ_WRITE
+        ),
+        None,
+    )
+    if rw_endpoint is None:
+        raise LakebaseToolError(
+            f"Branch '{default_branch.name}' has no read-write endpoint. "
+            f"Found endpoint types: {[e.spec.endpoint_type for e in endpoints if e.spec]}"
+        )
+
+    # list_endpoints results carry status already, but re-fetch to be sure
+    # we have current connection info (host can change across suspend/resume).
+    endpoint = _w.postgres.get_endpoint(name=rw_endpoint.name)
+    host = endpoint.status.hosts.host if endpoint.status and endpoint.status.hosts else None
+    if not host:
+        raise LakebaseToolError(
+            f"Endpoint '{rw_endpoint.name}' has no host yet -- it may still be "
+            f"starting up (state: {endpoint.status.current_state if endpoint.status else 'unknown'})."
+        )
+
+    _endpoint_cache["name"] = endpoint.name
+    _endpoint_cache["host"] = host
+    return endpoint.name, host
+
+
+def _get_credential(endpoint_name: str) -> str:
     """OAuth tokens for Lakebase are valid ~1hr; cache and refresh with a
     safety margin rather than minting a new one on every call."""
     now = time.time()
     if _cred_cache["token"] and now < _cred_cache["expires_at"] - 120:
         return _cred_cache["token"]
 
-    cred = _w.database.generate_database_credential(
-        request_id=str(uuid.uuid4()), instance_names=[config.LAKEBASE_INSTANCE_NAME]
-    )
+    cred = _w.postgres.generate_database_credential(endpoint=endpoint_name)
     _cred_cache["token"] = cred.token
-    _cred_cache["expires_at"] = now + 3600
+    # DatabaseCredential.expire_time is a real timestamp when present; fall
+    # back to the documented ~1hr lifetime if the SDK doesn't populate it.
+    if getattr(cred, "expire_time", None):
+        _cred_cache["expires_at"] = cred.expire_time.timestamp()
+    else:
+        _cred_cache["expires_at"] = now + 3600
     return cred.token
 
 
@@ -65,11 +160,11 @@ def _pg_user() -> str:
 
 def get_connection():
     if not config.LAKEBASE_ENABLED:
-        raise LakebaseToolError("Lakebase is not configured (LAKEBASE_INSTANCE_NAME is unset).")
-    instance = _w.database.get_database_instance(name=config.LAKEBASE_INSTANCE_NAME)
-    token = _get_credential()
+        raise LakebaseToolError("Lakebase is not configured (LAKEBASE_PROJECT_ID is unset).")
+    endpoint_name, host = _resolve_endpoint()
+    token = _get_credential(endpoint_name)
     return psycopg2.connect(
-        host=instance.read_write_dns,
+        host=host,
         port=config.LAKEBASE_PORT,
         dbname=config.LAKEBASE_DATABASE,
         user=_pg_user(),

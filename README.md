@@ -20,7 +20,9 @@ rather than Lakebase's actual OAuth credential-vending path. This version:
 
 - Actually executes reads and writes (via the Databricks SQL Statement
   Execution API for UC, and `psycopg2` for Lakebase).
-- Fixes Lakebase auth to use `WorkspaceClient.database.generate_database_credential(...)`.
+- Fixes Lakebase auth to use `WorkspaceClient.postgres.generate_database_credential(...)`
+  (Autoscaling's Project -> Branch -> Endpoint model, not the older
+  Provisioned API's flat instance credential call).
 - Never lets the LLM write raw SQL text or a raw WHERE clause -- writes and
   filters are structured (table/column/operator/value), validated against
   real schema, and identifiers are substituted safely (`IDENTIFIER()` on
@@ -82,7 +84,7 @@ Copy the defaults in `config.py` or set these env vars:
 | `UC_CATALOG` / `UC_SCHEMA` | Where the sample tables + audit log live |
 | `DATABRICKS_SQL_WAREHOUSE_ID` | Warehouse the app queries through |
 | `MODEL_ENDPOINT` | Foundation Model serving endpoint to use |
-| `LAKEBASE_INSTANCE_NAME` | Leave blank to demo UC-only |
+| `LAKEBASE_PROJECT_ID` | Project ID from the Lakebase Postgres UI's "Autoscaling" tab; leave blank to demo UC-only |
 | `LAKEBASE_DATABASE`, `LAKEBASE_PG_USER` | Lakebase connection details |
 | `ALLOWED_UC_TABLES`, `ALLOWED_LAKEBASE_TABLES` | Tables the agent may touch |
 
@@ -92,7 +94,7 @@ Copy the defaults in `config.py` or set these env vars:
 ```bash
 pip install -r requirements.txt
 python setup/deploy_sample_data.py         # UC: customers, orders, audit log, helper functions
-python setup/deploy_lakebase_sample.py     # Lakebase: support_tickets (only if LAKEBASE_INSTANCE_NAME is set)
+python setup/deploy_lakebase_sample.py     # Lakebase: support_tickets (only if LAKEBASE_PROJECT_ID is set)
 ```
 
 **UI-only (no CLI):**
@@ -101,10 +103,39 @@ python setup/deploy_lakebase_sample.py     # Lakebase: support_tickets (only if 
   your real values (find-and-replace before pasting).
 - Lakebase side: there's no SQL-Editor equivalent for Postgres. Create a new
   Databricks **notebook**, paste in `setup/lakebase_notebook_setup.py`, fill in
-  the three `LAKEBASE_*` values at the top, and run it. It's self-contained
-  (no dependency on this repo's file layout) so it works regardless of where
-  the notebook lives, and it authenticates the same way the app itself will
-  (`generate_database_credential`), so if the notebook can connect, the app will too.
+  the `LAKEBASE_*` values at the top (`LAKEBASE_PROJECT_ID` is the project ID
+  shown in the Lakebase Postgres UI's **Autoscaling** tab -- see "Finding
+  your Lakebase project ID" below), and run it. It's self-contained (no
+  dependency on this repo's file layout) so it works regardless of where the
+  notebook lives, and it authenticates the same way the app itself will
+  (project -> default branch -> read-write endpoint, then
+  `generate_database_credential`), so if the notebook can connect, the app will too.
+
+### Finding your Lakebase project ID
+
+Lakebase Postgres has two capacity modes with two different underlying
+APIs: legacy **Provisioned** (a flat instance name) and current-gen
+**Autoscaling** (a Project -> Branch -> Endpoint hierarchy). This app
+targets Autoscaling, which is the default for new Lakebase instances.
+
+In the workspace, open the app switcher and go to **Lakebase Postgres**.
+Your instance will show under either a "Provisioned" or an "Autoscaling"
+tab -- check which one. If it's Autoscaling, the name/ID shown there is
+what goes in `LAKEBASE_PROJECT_ID`. An instance that was created under
+Provisioned and later upgraded shows up under Autoscaling with a
+"(upgraded)" suffix in the UI -- that suffix is just a display label, not
+part of the actual project ID; use the ID without it.
+
+`LAKEBASE_PROJECT_ID` alone is enough -- the app resolves that project's
+default branch and its read-write endpoint (and the connection host that
+comes with it) itself at connect time, via `WorkspaceClient.postgres.*`.
+You don't need to separately look up or configure a branch or endpoint ID.
+
+If your instance is legacy Provisioned instead, both
+`tools/lakebase_connector.py` and `setup/lakebase_notebook_setup.py` have a
+comment marking exactly what to swap back to the old flat
+`WorkspaceClient.database.*` calls -- everything else (the query/write
+logic, the propose-confirm flow, the audit log) is unaffected either way.
 
 ## 3. Governance (do this before the demo, not after)
 
@@ -149,8 +180,8 @@ app's env vars), not the code:
 
 1. Set `UC_CATALOG` / `UC_SCHEMA` to their catalog/schema, and
    `ALLOWED_UC_TABLES` to the specific tables they want exposed.
-2. Set `LAKEBASE_INSTANCE_NAME` / `LAKEBASE_DATABASE` / `ALLOWED_LAKEBASE_TABLES`
-   to their Lakebase instance.
+2. Set `LAKEBASE_PROJECT_ID` / `LAKEBASE_DATABASE` / `ALLOWED_LAKEBASE_TABLES`
+   to their Lakebase project.
 3. Re-run `setup/deploy_sample_data.py`'s function-creation half (or just
    run `sql/02_uc_helper_functions.sql` directly) against their
    catalog/schema -- it's generic, no changes needed.

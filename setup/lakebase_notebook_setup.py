@@ -10,16 +10,28 @@ first (remove the leading '#'):
 # dbutils.library.restartPython()
 Then run this script in the next cell.
 
-Fill in the three CONFIG values below before running.
-"""
+Targets Lakebase Postgres "Autoscaling" capacity mode (the current default
+for new Lakebase instances), which uses a Project -> Branch -> Endpoint
+resource hierarchy under WorkspaceClient.postgres.* -- NOT the older
+"Provisioned" mode's flat WorkspaceClient.database.* API. If your instance
+is legacy Provisioned (check the Lakebase Postgres UI: does your instance
+show under a "Provisioned" tab or an "Autoscaling" tab?), see the note at
+the bottom of this file instead.
 
-import uuid
+Fill in the CONFIG values below before running.
+"""
 
 import psycopg2
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.postgres import EndpointType
 
 # ---- CONFIG: fill these in ----
-LAKEBASE_INSTANCE_NAME = "<your-lakebase-instance-name>"   # not a hostname -- the instance's name
+# The project's short ID -- the same string shown as the instance/project
+# name in the Lakebase Postgres UI's "Autoscaling" tab. (If your instance
+# shows a "(upgraded)" suffix there, that suffix is a UI label only -- use
+# the ID without it.) This is NOT a hostname; the script below resolves the
+# connection host for you from this ID.
+LAKEBASE_PROJECT_ID = "<your-lakebase-project-id>"
 LAKEBASE_DATABASE = "databricks_postgres"                   # change if you used a different db name
 LAKEBASE_PG_USER = ""  # leave blank to use your current Databricks identity; only works if a
                         # matching Postgres role already exists for it (see README "Governance")
@@ -47,13 +59,39 @@ INSERT INTO support_tickets (customer_id, subject, status, priority, created_at)
 
 w = WorkspaceClient()
 
-print(f"Looking up Lakebase instance '{LAKEBASE_INSTANCE_NAME}'...")
-instance = w.database.get_database_instance(name=LAKEBASE_INSTANCE_NAME)
+project_name = f"projects/{LAKEBASE_PROJECT_ID}"
+print(f"Looking up Lakebase project '{project_name}'...")
+w.postgres.get_project(name=project_name)  # raises if the project ID is wrong
+
+print("Finding the project's default branch...")
+branches = list(w.postgres.list_branches(parent=project_name))
+if not branches:
+    raise RuntimeError(f"Project '{project_name}' has no branches.")
+default_branch = next((b for b in branches if b.status and b.status.default), None)
+if default_branch is None:
+    default_branch = branches[0]
+    print(f"  (no branch marked default -- using the first one: {default_branch.name})")
+else:
+    print(f"  default branch: {default_branch.name}")
+
+print("Finding that branch's read-write endpoint...")
+endpoints = list(w.postgres.list_endpoints(parent=default_branch.name))
+rw_endpoint = next(
+    (e for e in endpoints if e.spec and e.spec.endpoint_type == EndpointType.ENDPOINT_TYPE_READ_WRITE),
+    None,
+)
+if rw_endpoint is None:
+    raise RuntimeError(f"Branch '{default_branch.name}' has no read-write endpoint.")
+
+endpoint = w.postgres.get_endpoint(name=rw_endpoint.name)
+host = endpoint.status.hosts.host if endpoint.status and endpoint.status.hosts else None
+if not host:
+    raise RuntimeError(f"Endpoint '{rw_endpoint.name}' has no host yet -- it may still be starting up.")
+print(f"  endpoint: {endpoint.name}")
+print(f"  host: {host}")
 
 print("Generating a short-lived OAuth credential (this is the same path the app itself uses)...")
-cred = w.database.generate_database_credential(
-    request_id=str(uuid.uuid4()), instance_names=[LAKEBASE_INSTANCE_NAME]
-)
+cred = w.postgres.generate_database_credential(endpoint=endpoint.name)
 
 pg_user = LAKEBASE_PG_USER
 if not pg_user:
@@ -61,10 +99,10 @@ if not pg_user:
     pg_user = me.user_name or me.emails[0].value
     print(f"LAKEBASE_PG_USER not set -- trying current identity: {pg_user}")
     print("If this fails with an auth error, a Postgres role matching this identity "
-          "probably doesn't exist yet in the instance -- create one and/or set LAKEBASE_PG_USER.")
+          "probably doesn't exist yet in the project -- create one and/or set LAKEBASE_PG_USER.")
 
 conn = psycopg2.connect(
-    host=instance.read_write_dns,
+    host=host,
     port=5432,
     dbname=LAKEBASE_DATABASE,
     user=pg_user,
@@ -90,7 +128,18 @@ print(
     "or a Postgres client connected the same way this script did:\n"
     '  GRANT SELECT, UPDATE ON support_tickets TO "<app-service-principal>";\n'
     "Then set these as your app's env vars (in app.yaml) and redeploy:\n"
-    f"  LAKEBASE_INSTANCE_NAME={LAKEBASE_INSTANCE_NAME}\n"
+    f"  LAKEBASE_PROJECT_ID={LAKEBASE_PROJECT_ID}\n"
     f"  LAKEBASE_DATABASE={LAKEBASE_DATABASE}\n"
     f"  LAKEBASE_PG_USER={LAKEBASE_PG_USER or '(leave blank to match the app service principal identity, once a role exists for it)'}"
 )
+
+# ---- If your instance is legacy "Provisioned" instead of "Autoscaling" ----
+# Provisioned uses a different, flat API -- swap the lookup/credential/connect
+# steps above for:
+#   import uuid
+#   instance = w.database.get_database_instance(name=LAKEBASE_INSTANCE_NAME)
+#   cred = w.database.generate_database_credential(
+#       request_id=str(uuid.uuid4()), instance_names=[LAKEBASE_INSTANCE_NAME]
+#   )
+#   host = instance.read_write_dns
+# everything else (the psycopg2.connect call, SAMPLE_SQL, etc.) stays the same.
