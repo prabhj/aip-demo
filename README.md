@@ -172,7 +172,7 @@ databricks apps deploy genie-uc-lakebase-demo --source-code-path /Workspace/User
 Set the env vars from step 1 either in `app.yaml` or under the app's
 "Environment variables" in the Apps UI, then open the app URL.
 
-## Reuse for a client's real data
+## Reuse for real data
 
 This is the point of building it this way -- to go from the sample demo to
 a client's actual tables, you should only need to touch `config.py` (or the
@@ -189,7 +189,7 @@ app's env vars), not the code:
 5. Skip the sample-data inserts (`sql/01_schema_and_tables.sql`'s `INSERT`
    statements) entirely -- their tables already have real data.
 
-## Known simplifications (call these out to the client as next steps, not as "done")
+## Known simplifications (Next Steps)
 
 - `PendingActionStore` is in-memory per app process -- fine for a single-
   instance demo, but won't survive an app restart or work across multiple
